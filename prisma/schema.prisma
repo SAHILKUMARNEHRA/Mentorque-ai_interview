@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum InterviewStatus {
+  CREATED
+  LIVE
+  COMPLETED
+}
+
+model User {
+  id           String      @id @default(cuid())
+  name         String
+  email        String      @unique
+  passwordHash String
+  createdAt    DateTime    @default(now())
+  interviews   Interview[]
+}
+
+model Interview {
+  id           String            @id @default(cuid())
+  userId       String
+  role         String
+  level        String
+  focus        String
+  language     String            @default("English")
+  status       InterviewStatus   @default(CREATED)
+  score        Int?
+  summary      String?
+  strengths    String[]
+  improvements String[]
+  nextSteps    String[]
+  createdAt    DateTime          @default(now())
+  startedAt    DateTime?
+  endedAt      DateTime?
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  turns        InterviewTurn[]
+}
+
+model InterviewTurn {
+  id          String    @id @default(cuid())
+  interviewId String
+  speaker     String
+  text        String
+  createdAt   DateTime  @default(now())
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId, createdAt])
+}
