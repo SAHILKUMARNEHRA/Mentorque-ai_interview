@@ -1,8 +1,9 @@
 "use client";
 
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Captions, CircleStop, Loader2, Mic, MicOff, PhoneCall, Sparkles, Volume2 } from "lucide-react";
+import { ArrowLeft, Captions, CircleStop, Clock, Loader2, MessageSquare, Mic, MicOff, PhoneCall, Send, ShieldCheck, Sparkles, Video, Volume2 } from "lucide-react";
 import clsx from "clsx";
 
 type InterviewTurn = {
@@ -83,6 +84,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [liveCandidateText, setLiveCandidateText] = useState("");
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
+  const [chatDraft, setChatDraft] = useState("");
+  const [currentTime, setCurrentTime] = useState("--:--");
 
   useEffect(() => {
     async function load() {
@@ -95,13 +98,17 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       const data = await response.json();
       setInterview(data.interview);
       setTurns(data.interview.turns || []);
+      if (data.interview.status === "COMPLETED") {
+        router.replace(`/interview/${interviewId}/report`);
+        return;
+      }
       setPhase(data.interview.status === "COMPLETED" ? "complete" : "ready");
       setStatus("Ready when you are");
     }
 
     void load();
     return () => cleanup();
-  }, [interviewId]);
+  }, [interviewId, router]);
 
   useEffect(() => {
     if (!("speechSynthesis" in window)) return;
@@ -112,7 +119,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         .filter((voice) => isVoiceForLanguage(voice, interview?.language || "English"));
       const clearInterviewVoices = languageVoices.filter(isClearInterviewVoice);
       const availableVoices = (clearInterviewVoices.length > 0 ? clearInterviewVoices : languageVoices).sort(
-        (first, second) => voiceQualityScore(second) - voiceQualityScore(first),
+        (first, second) => voiceQualityScore(second, interview?.language || "English") - voiceQualityScore(first, interview?.language || "English"),
       );
 
       setVoices(availableVoices);
@@ -137,6 +144,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [turns, liveCandidateText]);
+
+  useEffect(() => {
+    const updateTime = () => setCurrentTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    updateTime();
+    const timer = window.setInterval(updateTime, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function cleanup() {
     activeRef.current = false;
@@ -169,13 +183,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       const preferredVoice =
         voices.find((voice) => voice.voiceURI === selectedVoiceRef.current) ||
         (clearInterviewVoices.length > 0 ? clearInterviewVoices : languageVoices).sort(
-          (first, second) => voiceQualityScore(second) - voiceQualityScore(first),
+          (first, second) => voiceQualityScore(second, interview?.language || "English") - voiceQualityScore(first, interview?.language || "English"),
         )[0];
 
       if (preferredVoice) utterance.voice = preferredVoice;
       utterance.lang = preferredVoice?.lang || speechLanguageFor(interview?.language || "English");
-      utterance.rate = interview?.language === "Hindi" ? 0.9 : 0.94;
-      utterance.pitch = 1;
+      utterance.rate = interview?.language === "Hindi" ? 0.86 : 0.9;
+      utterance.pitch = 1.02;
       utterance.volume = 1;
       utterance.onstart = () => {
         speakingRef.current = true;
@@ -234,6 +248,19 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     setLiveCandidateText("");
     setStatus("Ending interview by voice");
     await endInterview();
+  }
+
+  async function submitChatMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = chatDraft.trim();
+    if (!message || processingRef.current || phase === "ending" || phase === "complete") return;
+
+    setChatDraft("");
+    if (isEndInterviewCommand(message)) {
+      await finishByVoiceCommand(message);
+      return;
+    }
+    await requestNextTurn(message);
   }
 
   function configureRecognition() {
@@ -343,6 +370,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       setInterview(data.interview);
       setPhase("complete");
       setStatus("Scorecard ready");
+      router.push(`/interview/${interviewId}/report`);
     } else {
       setError(data.error || "Could not complete interview.");
       setPhase("error");
@@ -350,152 +378,198 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   }
 
   return (
-    <main className="room-shell">
-      <header className="room-topbar">
-        <button className="ghost-button" onClick={() => router.push("/")}>
-          <ArrowLeft size={16} /> Dashboard
-        </button>
-        <span className={clsx("live-dot", phase === "live" && "active")} />
+    <main className="meeting-shell">
+      <header className="meeting-topbar">
+        <div className="meeting-title">
+          <button className="ghost-button meeting-back" onClick={() => router.push("/")}>
+            <ArrowLeft size={16} /> Dashboard
+          </button>
+          <span />
+          <strong>{interview ? `${interview.role} Mock Interview` : "Mentorque Interview"}</strong>
+          <b>Mentorque</b>
+        </div>
+        <div className="meeting-status">
+          <span className={clsx("proctor-pill", phase === "live" && "active")}>
+            <ShieldCheck size={15} /> {phase === "live" ? "Proctoring enabled" : "Waiting room"}
+          </span>
+          <span className="meeting-timer"><Clock size={15} /> 10:00</span>
+        </div>
       </header>
 
-      <section className="voice-stage">
-        <p className="eyebrow">{interview ? `${interview.level} ${interview.role}` : "Voice room"}</p>
-        <h1>{status}</h1>
+      <section className="meeting-layout">
+        <section className="meeting-stage">
+          <div className="meeting-grid">
+            <article className={clsx("participant-tile ai-tile", speakingRef.current && "speaking")}>
+              <div className="participant-avatar-wrap">
+                <span className="speaking-ring" />
+                <Image className="photo-avatar" src="/ai-interviewer-avatar.svg" alt="AI interviewer Ava" width={126} height={126} priority />
+              </div>
+              <div className="participant-caption">
+                <strong>Ava · AI Interviewer</strong>
+                <span>{speakingRef.current ? "Speaking" : processingRef.current ? "Thinking" : "Ready"}</span>
+              </div>
+            </article>
 
-        <div className={clsx("interviewer-card", phase, speakingRef.current && "speaking")}>
-          <div className="avatar-orbit" aria-hidden="true">
-            <span />
-            <span />
+            <article className={clsx("participant-tile candidate-tile", liveCandidateText && "speaking")}>
+              <div className="candidate-orb">
+                <span>{interview ? interview.role.slice(0, 1).toUpperCase() : "Y"}</span>
+                <Mic size={28} />
+              </div>
+              <div className="participant-caption">
+                <strong>You</strong>
+                <span>{liveCandidateText ? "Speaking" : muted ? "Muted" : "Listening"}</span>
+              </div>
+            </article>
           </div>
-          <div className="interviewer-avatar" aria-label="AI interviewer avatar">
-            <div className="avatar-face">
-              <span className="avatar-hair" />
-              <span className="avatar-eye left" />
-              <span className="avatar-eye right" />
-              <span className="avatar-nose" />
-              <span className="avatar-mouth" />
-            </div>
+
+          <div className="stage-subtitle">
+            <Sparkles size={18} />
+            <span>{status}</span>
           </div>
-          <div className="interviewer-meta">
-            <span><Sparkles size={14} /> Mentorque AI interviewer</span>
-            <strong>{phase === "live" ? `${interview?.language || "English"} adaptive voice session` : "Ready for a natural interview"}</strong>
-          </div>
-          <div className={clsx("voice-visual", phase)}>
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
-        </div>
 
-        {interview && <p className="room-focus">{interview.focus}</p>}
-
-        {(phase === "ready" || phase === "live") && voices.length > 0 && (
-          <label className="voice-picker">
-            <span><Volume2 size={15} /> Interviewer voice</span>
-            <select value={selectedVoice} onChange={(event) => setSelectedVoice(event.target.value)}>
-              {voices.map((voice, index) => (
-                <option value={voice.voiceURI} key={`${voice.voiceURI}-${voice.name}`}>
-                  {index === 0 ? "Recommended · " : ""}{voice.name} ({voice.lang})
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        {phase === "ready" && (
-          <button className="call-button" onClick={startInterview}>
-            <PhoneCall size={24} /> Start interview
-          </button>
-        )}
-
-        {(phase === "connecting" || phase === "ending" || phase === "loading") && (
-          <button className="call-button muted" disabled>
-            <Loader2 className="spin" size={24} /> Please wait
-          </button>
-        )}
-
-        {phase === "live" && (
-          <div className="call-controls">
-            <button className="round-button" onClick={toggleMute} aria-label={muted ? "Unmute" : "Mute"} title={muted ? "Unmute" : "Mute"}>
-              {muted ? <MicOff size={22} /> : <Mic size={22} />}
-            </button>
-            <button className="end-button" onClick={endInterview}>
-              <CircleStop size={22} /> End
-            </button>
-            <button className="round-button" disabled aria-label="Browser audio output" title="Browser audio output">
-              <Volume2 size={22} />
-            </button>
-          </div>
-        )}
-
-        {phase === "error" && (
-          <div className="error-panel">
-            <strong>Something needs attention</strong>
-            <p>{error}</p>
-          </div>
-        )}
-      </section>
-
-      {(phase === "live" || phase === "ending" || (phase === "complete" && turns.length > 0)) && (
-        <section className="transcript-panel" aria-live="polite">
-          <div className="transcript-heading">
+          <div className="invigilator-card">
+            <Image src="/ai-interviewer-avatar.svg" alt="" width={48} height={48} />
             <div>
-              <p className="eyebrow">Live captions</p>
-              <h2><Captions size={21} /> Conversation transcript</h2>
+              <strong>AI Invigilator</strong>
+              <span>Transcript, voice, and progress are monitored for your scorecard.</span>
             </div>
-            <span>{turns.length} turns</span>
           </div>
-          <div className="transcript-feed">
+
+          {interview && (
+            <div className="meeting-details">
+              <span>{interview.level}</span>
+              <span>{interview.language}</span>
+              <span>{interview.focus}</span>
+            </div>
+          )}
+        </section>
+
+        <aside className="meeting-side-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Interview transcript</p>
+              <h2><Captions size={19} /> Live transcript</h2>
+            </div>
+            <span>{turns.length}</span>
+          </div>
+
+          <div className="transcript-alert">
+            <MessageSquare size={17} />
+            <span>Captions may contain minor speech-recognition mistakes. AI responses still use full context.</span>
+          </div>
+
+          <div className="meeting-transcript-feed" aria-live="polite">
+            {turns.length === 0 && !liveCandidateText && (
+              <div className="empty-transcript">
+                <Volume2 size={22} />
+                <p>Start the interview and Ava will ask for your intro first.</p>
+              </div>
+            )}
             {turns.map((turn, index) => (
-              <article className={clsx("transcript-turn", turn.speaker)} key={turn.id || `${turn.speaker}-${index}`}>
-                <span>{turn.speaker === "interviewer" ? "Interviewer" : "You"}</span>
+              <article className={clsx("meeting-transcript-turn", turn.speaker)} key={turn.id || `${turn.speaker}-${index}`}>
+                <span>{turn.speaker === "interviewer" ? "Ava" : "You"}</span>
                 <p>{turn.text}</p>
               </article>
             ))}
             {liveCandidateText && (
-              <article className="transcript-turn candidate live-caption">
+              <article className="meeting-transcript-turn candidate live-caption">
                 <span>You · speaking</span>
                 <p>{liveCandidateText}</p>
               </article>
             )}
             <div ref={transcriptEndRef} />
           </div>
-        </section>
+
+          <form className="chat-fallback" onSubmit={submitChatMessage}>
+            <label htmlFor="chat-fallback-input">Chat fallback</label>
+            <div>
+              <input
+                id="chat-fallback-input"
+                value={chatDraft}
+                onChange={(event) => setChatDraft(event.target.value)}
+                placeholder="Type only if mic fails..."
+                disabled={processingRef.current || phase === "ending" || phase === "complete"}
+              />
+              <button type="submit" disabled={!chatDraft.trim() || processingRef.current || phase === "ending" || phase === "complete"}>
+                <Send size={17} />
+              </button>
+            </div>
+          </form>
+        </aside>
+      </section>
+
+      <section className="meeting-controlbar">
+        <div className="meeting-footer-title">
+          <strong>Mentorque AI Interview</strong>
+          <span>{currentTime}</span>
+        </div>
+
+        <div className="meeting-controls">
+          {(phase === "connecting" || phase === "ending" || phase === "loading") && (
+            <button className="round-button meeting-round" disabled>
+              <Loader2 className="spin" size={22} />
+            </button>
+          )}
+          {phase === "ready" && (
+            <button className="call-button meeting-start" onClick={startInterview}>
+              <PhoneCall size={22} /> Start interview
+            </button>
+          )}
+          {phase === "live" && (
+            <>
+              <button className="round-button meeting-round" onClick={toggleMute} aria-label={muted ? "Unmute" : "Mute"} title={muted ? "Unmute" : "Mute"}>
+                {muted ? <MicOff size={22} /> : <Mic size={22} />}
+              </button>
+              <button className="round-button meeting-round" disabled aria-label="Camera placeholder" title="Voice-first interview">
+                <Video size={22} />
+              </button>
+              <button className="end-button meeting-end" onClick={endInterview}>
+                <CircleStop size={21} /> End Interview
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="meeting-audio">
+          {(phase === "ready" || phase === "live") && voices.length > 0 && (
+            <label className="voice-picker compact-picker">
+              <span><Volume2 size={15} /> Clear voice</span>
+              <select value={selectedVoice} onChange={(event) => setSelectedVoice(event.target.value)}>
+                {voices.map((voice, index) => (
+                  <option value={voice.voiceURI} key={`${voice.voiceURI}-${voice.name}`}>
+                    {index === 0 ? "Recommended · " : ""}{voice.name} ({voice.lang})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+      </section>
+
+      {phase === "error" && (
+        <div className="error-panel meeting-error">
+          <strong>Something needs attention</strong>
+          <p>{error}</p>
+        </div>
       )}
 
-      {phase === "complete" && interview && (
-        <section className="scorecard">
-          <div className="score-hero">
-            <div className="score-ring" style={{ "--score": `${interview.score ?? 0}%` } as CSSProperties}>
-              <strong>{interview.score ?? 0}</strong>
-              <span>/100</span>
-            </div>
-            <div>
-              <p className="eyebrow">Interview scorecard</p>
-              <h2>{interview.summary || "Interview complete"}</h2>
-              <p className="score-note">Review what went well, what needs work, and exactly how to improve before your next round.</p>
-            </div>
-          </div>
-          <ScoreBars score={interview.score ?? 0} />
-          <div className="score-grid">
-            <ScoreList title="Good parts" items={interview.strengths} tone="good" />
-            <ScoreList title="Bad / weak parts" items={interview.improvements} tone="weak" />
-            <ScoreList title="How to improve" items={interview.nextSteps} tone="next" />
-          </div>
-        </section>
-      )}
     </main>
   );
 }
 
-function voiceQualityScore(voice: SpeechSynthesisVoice) {
+function voiceQualityScore(voice: SpeechSynthesisVoice, language: Interview["language"]) {
   const voiceName = voice.name.toLowerCase();
-  let score = voice.lang.toLowerCase() === "en-us" ? 20 : 10;
+  const voiceLang = voice.lang.toLowerCase();
+  let score = voiceLang === "en-us" ? 20 : 10;
 
+  if (language === "English" && voiceLang === "en-in") score -= 45;
+  if (language === "English" && (voiceLang === "en-us" || voiceLang === "en-gb")) score += 35;
+  if (language === "Hinglish" && voiceLang === "en-in") score += 80;
+  if (language === "Hindi" && voiceLang.startsWith("hi")) score += 120;
   if (/natural|premium|enhanced/.test(voiceName)) score += 100;
   if (/google us english/.test(voiceName)) score += 95;
-  if (/google हिन्दी|lekha|kalpana|heera|rishi/.test(voiceName)) score += 95;
+  if (language !== "English" && /google हिन्दी|lekha|kalpana|heera|rishi/.test(voiceName)) score += 95;
+  if (language === "English" && /samantha|daniel|allison|ava/.test(voiceName)) score += 120;
   if (/microsoft (aria|jenny|ava|guy|davis)/.test(voiceName)) score += 90;
   if (/samantha|ava|allison|daniel/.test(voiceName)) score += 80;
   if (/karen|moira|rishi|reed|shelley|sandy|flo/.test(voiceName)) score += 55;
@@ -514,7 +588,7 @@ function isVoiceForLanguage(voice: SpeechSynthesisVoice, language: Interview["la
 
 function isClearInterviewVoice(voice: SpeechSynthesisVoice) {
   const voiceName = voice.name.toLowerCase();
-  const noveltyVoice = /bad news|bahh|bells|boing|bubbles|cellos|jester|organ|superstar|trinoids|whisper|wobble|zarvox|junior|fred|ralph|albert/.test(
+  const noveltyVoice = /bad news|good news|bahh|bells|boing|bubbles|cellos|jester|organ|superstar|trinoids|whisper|wobble|zarvox|junior|fred|ralph|albert|grandma|grandpa|rocko/.test(
     voiceName,
   );
 
@@ -548,44 +622,4 @@ function isEndInterviewCommand(text: string) {
     "इंटरव्यू खत्म",
     "इंटरव्यू बंद",
   ].some((command) => normalized.includes(command));
-}
-
-function ScoreBars({ score }: { score: number }) {
-  const communication = Math.min(100, Math.max(35, score + 6));
-  const depth = Math.min(100, Math.max(30, score - 4));
-  const clarity = Math.min(100, Math.max(30, Math.round((communication + depth + score) / 3)));
-
-  return (
-    <div className="score-bars" aria-label="Interview performance chart">
-      <ScoreBar label="Overall readiness" value={score} />
-      <ScoreBar label="Communication clarity" value={communication} />
-      <ScoreBar label="Answer depth" value={depth} />
-      <ScoreBar label="Improvement priority" value={100 - clarity} invert />
-    </div>
-  );
-}
-
-function ScoreBar({ label, value, invert = false }: { label: string; value: number; invert?: boolean }) {
-  return (
-    <div className={clsx("score-bar", invert && "warning")}>
-      <div>
-        <span>{label}</span>
-        <strong>{value}%</strong>
-      </div>
-      <i style={{ "--bar": `${value}%` } as CSSProperties} />
-    </div>
-  );
-}
-
-function ScoreList({ title, items, tone }: { title: string; items: string[]; tone: "good" | "weak" | "next" }) {
-  return (
-    <article className={clsx("score-list", tone)}>
-      <h3>{title}</h3>
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </article>
-  );
 }
