@@ -10,6 +10,7 @@ type Params = {
 
 type RequestBody = {
   text?: string;
+  directorNote?: string;
 };
 
 export async function POST(request: Request, { params }: Params) {
@@ -18,6 +19,7 @@ export async function POST(request: Request, { params }: Params) {
     const { id } = await params;
     const body = (await request.json()) as RequestBody;
     const candidateText = body.text?.trim();
+    const directorNote = body.directorNote?.trim();
 
     const interview = await prisma.interview.findFirst({
       where: { id, userId: user.id },
@@ -52,6 +54,7 @@ export async function POST(request: Request, { params }: Params) {
         : candidateAnswerCount === 1
           ? "The candidate has just given their introduction. Briefly acknowledge one specific detail from it, then ask the first interview question grounded in that exact detail."
           : "Choose the next response from the candidate's latest answer and the full context. Follow up when useful; otherwise transition naturally using something they already shared.";
+    const timingDirection = directorNote ? `\nTiming/director note: ${directorNote.slice(0, 500)}` : "";
 
     const reply = await generateWithGemini({
       systemInstruction: buildInterviewInstructions({
@@ -61,7 +64,7 @@ export async function POST(request: Request, { params }: Params) {
         language: interview.language,
         candidateName: user.name,
       }),
-      prompt: `Here is the complete interview so far:\n\n${transcript}\n\nTurn direction: ${turnDirection}\n\nGenerate only the interviewer's next short spoken response. Do not include labels, markdown, scoring, or analysis.`,
+      prompt: `Here is the complete interview so far:\n\n${transcript}\n\nTurn direction: ${turnDirection}${timingDirection}\n\nGenerate only the interviewer's next short spoken response. Do not include labels, markdown, scoring, or analysis.`,
     });
 
     await prisma.$transaction([

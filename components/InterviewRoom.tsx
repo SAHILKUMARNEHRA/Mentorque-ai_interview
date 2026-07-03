@@ -17,6 +17,7 @@ type Interview = {
   role: string;
   level: string;
   language: "English" | "Hindi" | "Hinglish";
+  candidateName: string;
   focus: string;
   status: "CREATED" | "LIVE" | "COMPLETED";
   score: number | null;
@@ -72,6 +73,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const speakingRef = useRef(false);
   const processingRef = useRef(false);
   const mutedRef = useRef(false);
+  const finalPromptAskedRef = useRef(false);
+  const endingRef = useRef(false);
+  const requestNextTurnRef = useRef<(candidateText?: string, directorNote?: string) => Promise<void>>(async () => {});
+  const endInterviewRef = useRef<() => Promise<void>>(async () => {});
   const selectedVoiceRef = useRef("");
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -82,10 +87,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [error, setError] = useState("");
   const [turns, setTurns] = useState<InterviewTurn[]>([]);
   const [liveCandidateText, setLiveCandidateText] = useState("");
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
   const [chatDraft, setChatDraft] = useState("");
   const [currentTime, setCurrentTime] = useState("--:--");
+  const [remainingSeconds, setRemainingSeconds] = useState(600);
 
   useEffect(() => {
     async function load() {
@@ -122,7 +127,6 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         (first, second) => voiceQualityScore(second, interview?.language || "English") - voiceQualityScore(first, interview?.language || "English"),
       );
 
-      setVoices(availableVoices);
       setSelectedVoice((current) => {
         if (current && availableVoices.some((voice) => voice.voiceURI === current)) return current;
         const savedVoice = window.localStorage.getItem("mentorque-voice");
@@ -209,7 +213,28 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     });
   }
 
-  async function requestNextTurn(candidateText?: string) {
+  useEffect(() => {
+    if (phase !== "live") return;
+
+    const timer = window.setInterval(() => {
+      setRemainingSeconds((current) => Math.max(0, current - 1));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase !== "live") return;
+    if (remainingSeconds <= 60 && remainingSeconds > 0 && !finalPromptAskedRef.current && !processingRef.current && !speakingRef.current) {
+      finalPromptAskedRef.current = true;
+      void requestNextTurnRef.current(undefined, "Only one minute remains. Briefly announce wrap-up and ask one final pinpoint question based on the strongest gap in the conversation.");
+    }
+    if (remainingSeconds === 0) {
+      void endInterviewRef.current();
+    }
+  }, [phase, remainingSeconds]);
+
+  async function requestNextTurn(candidateText?: string, directorNote?: string) {
     processingRef.current = true;
     if (candidateText) {
       setTurns((current) => [...current, { speaker: "candidate", text: candidateText }]);
@@ -221,21 +246,27 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       const response = await fetch(`/api/interviews/${interviewId}/respond`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: candidateText }),
+        body: JSON.stringify({ text: candidateText, directorNote }),
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Could not generate the next question.");
       }
+      if (endingRef.current) {
+        processingRef.current = false;
+        return;
+      }
 
       setTurns((current) => [...current, { speaker: "interviewer", text: data.reply }]);
       processingRef.current = false;
+      if (endingRef.current) return;
       await speak(data.reply);
       if (activeRef.current && !mutedRef.current) {
         window.setTimeout(startListening, 250);
       }
     } catch (requestError) {
       processingRef.current = false;
+      if (endingRef.current) return;
       activeRef.current = false;
       setError(requestError instanceof Error ? requestError.message : "The interview loop stopped.");
       setPhase("error");
@@ -334,8 +365,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       }
 
       configureRecognition();
+      endingRef.current = false;
       activeRef.current = true;
       mutedRef.current = false;
+      finalPromptAskedRef.current = false;
+      setRemainingSeconds(600);
       setMuted(false);
       setPhase("live");
       await requestNextTurn();
@@ -361,6 +395,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   }
 
   async function endInterview() {
+    if (endingRef.current) return;
+    endingRef.current = true;
     setPhase("ending");
     setStatus("Creating scorecard");
     cleanup();
@@ -377,6 +413,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     }
   }
 
+  requestNextTurnRef.current = requestNextTurn;
+  endInterviewRef.current = endInterview;
+
   return (
     <main className="meeting-shell">
       <header className="meeting-topbar">
@@ -390,14 +429,19 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
         <div className="meeting-status">
           <span className={clsx("proctor-pill", phase === "live" && "active")}>
-            <ShieldCheck size={15} /> {phase === "live" ? "Proctoring enabled" : "Waiting room"}
+            <ShieldCheck size={15} /> {phase === "live" ? "Interview live" : "Ready"}
           </span>
-          <span className="meeting-timer"><Clock size={15} /> 10:00</span>
+          <span className="meeting-timer"><Clock size={15} /> {formatTimer(remainingSeconds)}</span>
         </div>
       </header>
 
       <section className="meeting-layout">
         <section className="meeting-stage">
+          <div className="stage-subtitle">
+            <Sparkles size={18} />
+            <span>{status}</span>
+          </div>
+
           <div className="meeting-grid">
             <article className={clsx("participant-tile ai-tile", speakingRef.current && "speaking")}>
               <div className="participant-avatar-wrap">
@@ -412,19 +456,14 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
             <article className={clsx("participant-tile candidate-tile", liveCandidateText && "speaking")}>
               <div className="candidate-orb">
-                <span>{interview ? interview.role.slice(0, 1).toUpperCase() : "Y"}</span>
+                <span>{candidateInitial(interview?.candidateName)}</span>
                 <Mic size={28} />
               </div>
               <div className="participant-caption">
-                <strong>You</strong>
+                <strong>{interview?.candidateName || "You"}</strong>
                 <span>{liveCandidateText ? "Speaking" : muted ? "Muted" : "Listening"}</span>
               </div>
             </article>
-          </div>
-
-          <div className="stage-subtitle">
-            <Sparkles size={18} />
-            <span>{status}</span>
           </div>
 
           <div className="invigilator-card">
@@ -531,18 +570,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
 
         <div className="meeting-audio">
-          {(phase === "ready" || phase === "live") && voices.length > 0 && (
-            <label className="voice-picker compact-picker">
-              <span><Volume2 size={15} /> Clear voice</span>
-              <select value={selectedVoice} onChange={(event) => setSelectedVoice(event.target.value)}>
-                {voices.map((voice, index) => (
-                  <option value={voice.voiceURI} key={`${voice.voiceURI}-${voice.name}`}>
-                    {index === 0 ? "Recommended · " : ""}{voice.name} ({voice.lang})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <span><Volume2 size={16} /> Voice auto-selected</span>
         </div>
       </section>
 
@@ -599,6 +627,16 @@ function speechLanguageFor(language: Interview["language"]) {
   if (language === "Hindi") return "hi-IN";
   if (language === "Hinglish") return "en-IN";
   return "en-US";
+}
+
+function formatTimer(seconds: number) {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const remaining = (seconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${remaining}`;
+}
+
+function candidateInitial(name?: string) {
+  return name?.trim().charAt(0).toUpperCase() || "Y";
 }
 
 function isEndInterviewCommand(text: string) {

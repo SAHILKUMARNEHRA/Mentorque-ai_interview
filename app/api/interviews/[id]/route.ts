@@ -19,7 +19,7 @@ export async function GET(_: Request, { params }: Params) {
       return NextResponse.json({ error: "Interview not found." }, { status: 404 });
     }
 
-    return NextResponse.json({ interview });
+    return NextResponse.json({ interview: { ...interview, candidateName: user.name } });
   } catch (error) {
     if (error instanceof Response) return error;
     return NextResponse.json({ error: "Could not load interview." }, { status: 500 });
