@@ -35,7 +35,7 @@ export function readSession(req) {
 }
 
 export function isAdmin(email) {
-  return Boolean(config.adminEmail) && email?.toLowerCase() === config.adminEmail;
+  return Boolean(email) && config.adminEmails.includes(email.toLowerCase());
 }
 
 export async function requireUser(req, res, next) {

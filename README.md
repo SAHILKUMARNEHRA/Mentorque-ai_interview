@@ -99,7 +99,7 @@ docker compose up -d
 
 # 3. Configure the backend
 cp backend/.env.example backend/.env
-#    then fill in GEMINI_API_KEY, JWT_SECRET, ADMIN_EMAIL, MONGODB_URI
+#    then fill in GEMINI_API_KEY, JWT_SECRET, ADMIN_EMAILS, MONGODB_URI
 
 # 4. Run the API (port 5000) and the React app (port 5173) together
 npm run dev
@@ -125,7 +125,7 @@ Open http://localhost:5173 in the latest Chrome or Edge, create an account, choo
 | `JWT_SECRET` | ✅ | Long random string used to sign session cookies |
 | `GEMINI_API_KEY` | ✅ | Free API key from Google AI Studio |
 | `GEMINI_MODEL` | — | Defaults to `gemini-3.1-flash-lite` |
-| `ADMIN_EMAIL` | — | Email of the account that can open `/admin` |
+| `ADMIN_EMAILS` | — | Comma-separated emails that can open `/admin`, e.g. `owner@example.com,contributor@example.com` (`ADMIN_EMAIL` also works) |
 | `CLIENT_URL` | — | Allowed CORS origin when frontend and API run on different origins (default `http://localhost:5173`) |
 | `PORT` | — | Local API port (default `5000`) |
 
@@ -143,7 +143,7 @@ Steps:
 
 1. Create a free MongoDB Atlas cluster and copy its connection string.
 2. Import the GitHub repo into Vercel. `vercel.json` sets the build, so leave Framework Preset as **Other** and keep the Root Directory as the repo root.
-3. Under **Settings → Environment Variables**, add `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, `GEMINI_MODEL` and `ADMIN_EMAIL`.
+3. Under **Settings → Environment Variables**, add `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, `GEMINI_MODEL` and `ADMIN_EMAILS`.
 4. Deploy. Every push to `main` redeploys automatically.
 
 ---
