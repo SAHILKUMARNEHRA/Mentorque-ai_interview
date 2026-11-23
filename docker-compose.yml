@@ -1,15 +1,11 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  mongo:
+    image: mongo:7
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mentorque
     ports:
-      - "5432:5432"
+      - "27017:27017"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mongo-data:/data/db
 
 volumes:
-  postgres-data:
+  mongo-data:

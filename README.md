@@ -1,77 +1,162 @@
 # Mentorque AI Interview
 
-Voice-first mock interviews where a candidate speaks with an adaptive AI interviewer. The app uses browser Web Speech APIs for speech recognition and text-to-speech, Gemini free tier for adaptive interview reasoning, Next.js API routes for auth/session control, PostgreSQL with Prisma for persistence, and LangGraph for the final scorecard workflow.
+Voice-first mock interview platform built on the **MERN stack**. A candidate speaks with **Ava**, an adaptive AI interviewer. Ava listens to each answer, asks a follow-up based on what the candidate actually said, and produces a written scorecard at the end of the session.
 
-## Local Setup
+**Live demo:** https://mentorque-ai-interview.vercel.app/
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **M**ongoDB | MongoDB Atlas + Mongoose 8 | Stores users, interviews and embedded transcript turns |
+| **E**xpress | Express 5 (Node.js) | REST API: auth, interviews, AI responses, admin |
+| **R**eact | React 19 + Vite 6 + TypeScript | Single-page app: dashboard, live voice room, scorecard, admin panel |
+| **N**ode.js | Node.js 20+ | Runtime for the API (local server and Vercel serverless function) |
+| AI | Google Gemini API | Generates each next interviewer question from the full transcript |
+| AI workflow | LangGraph (`@langchain/langgraph`) | Turns the finished transcript into a structured scorecard |
+| Voice | Browser Web Speech API | Speech-to-text (candidate) and text-to-speech (Ava), with no paid voice provider |
+| Routing | React Router 7 | Client-side routes (`/`, `/interview/:id`, `/interview/:id/report`, `/admin`) |
+| Auth | JWT (`jsonwebtoken`) in an httpOnly cookie + `bcryptjs` | Email/password sign-up and login |
+| Validation | Zod | Request body validation on the API |
+| UI | lucide-react icons, plain CSS | Styling and icons |
+| Deployment | Vercel (static frontend + serverless Express) | One URL serves both the React app and `/api/*` |
+
+---
+
+## Project Structure
+
+```
+Mentorque-ai_interview/
+├── frontend/                     # React (Vite) client
+│   ├── index.html
+│   ├── vite.config.ts            # Dev server; proxies /api → http://localhost:5000
+│   ├── public/                   # Static assets (icon, interviewer avatar)
+│   └── src/
+│       ├── main.tsx              # React entry + BrowserRouter
+│       ├── App.tsx               # Route table
+│       ├── index.css             # Global styles
+│       ├── pages/                # Route-level pages (Home, Interview, Report, Admin)
+│       └── components/
+│           ├── HomeClient.tsx      # Auth screen + dashboard + new interview form
+│           ├── InterviewRoom.tsx   # Live voice interview loop (speech recognition + TTS)
+│           ├── InterviewReport.tsx # Scorecard and transcript view
+│           └── AdminPanel.tsx      # Admin overview of all users and interviews
+│
+├── backend/                      # Express + MongoDB API
+│   ├── .env.example
+│   └── src/
+│       ├── server.js             # Local server entry (app.listen)
+│       ├── app.js                # Express app: middleware + routes
+│       ├── config/               # db.js (cached Mongo connection), env.js
+│       ├── models/               # Mongoose models: User, Interview (with embedded turns)
+│       ├── middleware/           # auth.js (JWT cookie, requireUser, requireAdmin), error.js
+│       ├── controllers/          # authController, interviewController, adminController
+│       ├── routes/               # authRoutes, interviewRoutes, adminRoutes
+│       ├── services/             # gemini.js, interviewPrompt.js, interviewGraph.js (LangGraph)
+│       └── utils/                # validation.js (Zod), httpError.js, toJSON.js
+│
+├── api/index.js                  # Vercel serverless entry: exports the Express app
+├── vercel.json                   # Vercel build, output and rewrite config
+├── docker-compose.yml            # Local MongoDB
+├── package.json                  # npm workspaces root (frontend + backend)
+└── .env.example
+```
+
+---
+
+## API Reference
+
+All routes are prefixed with `/api`. Protected routes need the `mentorque_token` cookie set by login.
+
+| Method | Route | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | — | Health check |
+| POST | `/auth/signup` | — | Create an account `{ name, email, password }` |
+| POST | `/auth/login` | — | Log in and set the session cookie `{ email, password }` |
+| POST | `/auth/logout` | — | Clear the session cookie |
+| GET | `/auth/me` | — | Current user (or `null`), including `isAdmin` |
+| GET | `/interviews` | User | List the user's interviews |
+| POST | `/interviews` | User | Create an interview `{ role, level, language, focus }` |
+| GET | `/interviews/:id` | User | Interview with full transcript |
+| POST | `/interviews/:id/respond` | User | Save the candidate's answer and return Ava's next question `{ text?, directorNote? }` |
+| POST | `/interviews/:id/complete` | User | Run the LangGraph evaluator and save the scorecard |
+| GET | `/admin/overview` | Admin | Stats plus every user and interview |
+
+---
+
+## Getting Started (Local)
+
+**Requirements:** Node.js 20+, and MongoDB (local Docker, or a free MongoDB Atlas cluster).
 
 ```bash
+# 1. Install all dependencies (frontend + backend via npm workspaces)
 npm install
-cp .env.example .env
+
+# 2. Start MongoDB locally (skip if you use Atlas)
 docker compose up -d
-npm run db:migrate
+
+# 3. Configure the backend
+cp backend/.env.example backend/.env
+#    then fill in GEMINI_API_KEY, JWT_SECRET, ADMIN_EMAIL, MONGODB_URI
+
+# 4. Run the API (port 5000) and the React app (port 5173) together
 npm run dev
 ```
 
-Open `http://localhost:3000` in the latest Chrome or Edge, create an account, choose English, Hindi, or Hinglish, allow microphone access, and speak naturally. Say “end my interview” or “interview khatam” to finish by voice.
+Open http://localhost:5173 in the latest Chrome or Edge, create an account, choose English, Hindi or Hinglish, allow microphone access and speak naturally. Say "end my interview" or "interview khatam" to finish by voice.
 
-## Environment
+| Script | What it does |
+|---|---|
+| `npm run dev` | Backend + frontend together |
+| `npm run dev:backend` | Express API only (`node --watch`) |
+| `npm run dev:frontend` | Vite dev server only |
+| `npm run build` | Production build of the React app → `frontend/dist` |
+| `npm start` | Start the Express API in production mode |
 
-- `DATABASE_URL`: PostgreSQL connection string.
-- `JWT_SECRET`: long random string for signed session cookies.
-- `GEMINI_API_KEY`: free Google AI Studio API key.
-- `GEMINI_MODEL`: defaults to `gemini-3.1-flash-lite`.
-- `NEXT_PUBLIC_APP_URL`: deployed site URL, for example `https://your-app.vercel.app`.
+---
 
-## Architecture
+## Environment Variables
 
-- `app/api/interviews/[id]/respond`: sends the complete interview context to Gemini before generating each next response.
-- `components/InterviewRoom.tsx`: runs the voice-only browser loop using speech recognition and speech synthesis.
-- `lib/interviewPrompt.ts`: defines the adaptive interviewer behavior with no static question bank.
-- `lib/gemini.ts`: server-only Gemini free-tier client shared by follow-ups and evaluation.
-- `lib/interviewGraph.ts`: LangGraph workflow that turns the saved conversation into a structured scorecard using Gemini.
-- `prisma/schema.prisma`: users, interviews, and transcript turns stored in PostgreSQL.
+| Variable | Required | Description |
+|---|---|---|
+| `MONGODB_URI` | ✅ | MongoDB connection string, e.g. `mongodb+srv://USER:PASS@cluster.mongodb.net/mentorque` |
+| `JWT_SECRET` | ✅ | Long random string used to sign session cookies |
+| `GEMINI_API_KEY` | ✅ | Free API key from Google AI Studio |
+| `GEMINI_MODEL` | — | Defaults to `gemini-3.1-flash-lite` |
+| `ADMIN_EMAIL` | — | Email of the account that can open `/admin` |
+| `CLIENT_URL` | — | Allowed CORS origin when frontend and API run on different origins (default `http://localhost:5173`) |
+| `PORT` | — | Local API port (default `5000`) |
 
-## Free Deployment
+---
 
-1. Create a free Neon PostgreSQL database and use its connection string as `DATABASE_URL`.
-2. Create a free Gemini API key in Google AI Studio.
-3. Import the repository into a free Vercel Hobby project or a free Render web service.
-4. Add the environment variables below and run migrations with `npm run db:deploy`.
+## Deployment (Vercel)
 
-The app does not require a paid voice provider. Browser speech quality and recognition availability depend on the user’s browser and operating system.
+The repo deploys to Vercel as a single project:
 
-### Vercel Settings
+- **Frontend:** `npm run build` builds the React app into `frontend/dist`, which Vercel serves as static files.
+- **Backend:** `api/index.js` exports the Express app as a Vercel serverless function. `vercel.json` rewrites every `/api/*` request to it, and every other path to `index.html` so React Router can handle it.
+- **Database:** MongoDB Atlas (the free M0 cluster works). Under *Network Access*, allow `0.0.0.0/0` so Vercel's serverless functions can connect.
 
-- Framework preset: `Next.js`
-- Install command: `npm install`
-- Build command: `npm run build`
-- Output directory: leave empty / Next.js default
-- Runtime: Node.js 20+
-- After first deploy, run `npm run db:deploy` locally against the production `DATABASE_URL`, or use Vercel project settings → Deploy Hooks / CLI to run migrations before traffic.
+Steps:
 
-### Render Settings
+1. Create a free MongoDB Atlas cluster and copy its connection string.
+2. Import the GitHub repo into Vercel. `vercel.json` sets the build, so leave Framework Preset as **Other** and keep the Root Directory as the repo root.
+3. Under **Settings → Environment Variables**, add `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, `GEMINI_MODEL` and `ADMIN_EMAIL`.
+4. Deploy. Every push to `main` redeploys automatically.
 
-- Service type: `Web Service`
-- Runtime: `Node`
-- Build command: `npm install && npm run build && npm run db:deploy`
-- Start command: `npm run start`
-- Instance type: free
-- Health check path: `/`
+---
 
-### Production Environment Variables
+## How the Interview Works
 
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@HOST/neondb?sslmode=require&channel_binding=require"
-JWT_SECRET="generate-a-long-random-secret-at-least-32-chars"
-GEMINI_API_KEY="your-free-google-ai-studio-key"
-GEMINI_MODEL="gemini-3.1-flash-lite"
-NEXT_PUBLIC_APP_URL="https://your-deployed-domain"
-```
+1. `InterviewRoom.tsx` uses the browser's SpeechRecognition to capture the candidate's answer.
+2. The answer is sent to `POST /api/interviews/:id/respond`. The API saves it as a turn in MongoDB and sends the **full transcript** to Gemini, with interviewer instructions from `services/interviewPrompt.js`. There is no static question bank.
+3. Ava's reply is saved and returned. The browser reads it aloud with SpeechSynthesis.
+4. When the interview ends, `POST /api/interviews/:id/complete` runs a LangGraph workflow (`services/interviewGraph.js`) that scores the transcript and returns a summary, strengths, improvements and next steps.
 
-## Submission Notes
+## Notes
 
-- No OAuth; candidates self-register with email/password.
-- Voice is the primary interview surface; the live room does not present a chat box.
-- One interview type is implemented deeply: role-focused technical/product mock interviews with adaptive follow-ups.
-- The full stack can run on free tiers for a portfolio/demo workload, subject to provider quotas.
-- A Loom walkthrough should cover problem understanding, architecture decisions, the Realtime loop, and a live end-to-end run.
+- No OAuth: candidates self-register with email and password.
+- Voice is the main interview surface. The live room has no chat box.
+- Speech quality and recognition depend on the user's browser and operating system.
