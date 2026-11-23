@@ -2190,3 +2190,41 @@ textarea:focus {
     padding: 16px 0;
   }
 }
+
+/* Readable error / retry card on the dark meeting screen */
+.meeting-error {
+  display: grid;
+  gap: 8px;
+  background: #fff5f7;
+  border-color: rgba(190, 52, 85, 0.35);
+  box-shadow: var(--shadow);
+}
+
+.meeting-error strong {
+  color: #7a1d33;
+  font-size: 1rem;
+}
+
+.meeting-error p {
+  color: #9f2a45;
+  line-height: 1.45;
+}
+
+.retry-panel {
+  background: #fffaf0;
+  border-color: rgba(183, 106, 18, 0.4);
+}
+
+.retry-panel strong {
+  color: #7a4508;
+}
+
+.retry-panel p {
+  color: #5f4a2c;
+}
+
+.retry-panel .primary-button {
+  justify-self: start;
+  min-height: 40px;
+  padding: 0 18px;
+}

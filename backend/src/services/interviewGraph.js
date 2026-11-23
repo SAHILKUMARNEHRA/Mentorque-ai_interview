@@ -1,5 +1,5 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import { generateWithGemini } from "./gemini.js";
+import { GeminiUnavailableError, generateWithGemini } from "./gemini.js";
 
 const ReportState = Annotation.Root({
   role: Annotation(),
@@ -16,18 +16,17 @@ const ReportState = Annotation.Root({
   }),
 });
 
-const fallbackReport = {
-  score: 72,
-  summary:
-    "The interview captured enough signal to produce an initial scorecard, but the automated evaluator was unavailable. Review the saved transcript for the final hiring judgment.",
-  strengths: ["Completed a live voice interview", "Responded to adaptive follow-up questions"],
-  improvements: ["Add more concrete examples", "Explain trade-offs and impact with sharper metrics"],
-  nextSteps: ["Practice STAR-style stories", "Record one technical deep dive with measurable outcomes"],
+const noAnswersReport = {
+  score: 0,
+  summary: "The interview ended before the candidate answered any questions, so there is nothing to evaluate yet.",
+  strengths: ["Started a mock interview session", "Set up the role and focus area"],
+  improvements: ["Answer at least a few questions before ending", "Check that the microphone is allowed and working"],
+  nextSteps: ["Start a new interview and introduce yourself", "Use the chat fallback if the microphone is not available"],
 };
 
 async function generateReport(state) {
-  if (!process.env.GEMINI_API_KEY || state.turns.length === 0) {
-    return { report: fallbackReport };
+  if (!state.turns.some((turn) => turn.speaker === "candidate")) {
+    return { report: noAnswersReport };
   }
 
   const transcript = state.turns
@@ -53,9 +52,15 @@ async function generateReport(state) {
       },
     });
 
-    return { report: JSON.parse(response) };
-  } catch {
-    return { report: fallbackReport };
+    const report = JSON.parse(response);
+    report.score = Math.max(0, Math.min(100, Math.round(Number(report.score) || 0)));
+    return { report };
+  } catch (error) {
+    // Never save a made-up score: let the client retry the evaluation instead.
+    throw new GeminiUnavailableError(
+      "The scorecard could not be generated because the AI service is busy. Your transcript is saved — tap Retry in a few seconds.",
+      error,
+    );
   }
 }
 
@@ -67,5 +72,5 @@ const reportGraph = new StateGraph(ReportState)
 
 export async function runInterviewReport(input) {
   const result = await reportGraph.invoke(input);
-  return result.report ?? fallbackReport;
+  return result.report ?? noAnswersReport;
 }

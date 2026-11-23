@@ -121,8 +121,8 @@ export function AdminPanel() {
                   </div>
                   <div className="admin-row-actions">
                     <span className={clsx("status-pill", interview.status.toLowerCase())}>{statusLabel(interview)}</span>
-                    <button className="ghost-button" onClick={() => navigate(interview.status === "COMPLETED" ? `/interview/${interview.id}/report` : `/interview/${interview.id}`)}>
-                      Open
+                    <button className="ghost-button" onClick={() => navigate(`/interview/${interview.id}/report`)}>
+                      {interview.status === "COMPLETED" ? "View report" : "View transcript"}
                     </button>
                   </div>
                 </div>

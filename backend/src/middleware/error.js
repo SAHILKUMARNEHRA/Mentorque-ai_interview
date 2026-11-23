@@ -6,5 +6,5 @@ export function notFound(req, res) {
 export function errorHandler(err, req, res, _next) {
   const status = err.status || 500;
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: err.message || "Something went wrong." });
+  res.status(status).json({ error: err.message || "Something went wrong.", retryable: status === 503 });
 }

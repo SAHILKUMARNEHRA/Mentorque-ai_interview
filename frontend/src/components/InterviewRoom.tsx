@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Captions, CircleStop, Clock, Loader2, MessageSquare, Mic, MicOff, PhoneCall, Send, ShieldCheck, Sparkles, Video, Volume2 } from "lucide-react";
+import { ArrowLeft, Captions, CircleStop, Clock, Loader2, MessageSquare, Mic, MicOff, PhoneCall, RotateCcw, Send, ShieldCheck, Sparkles, Video, Volume2 } from "lucide-react";
 import clsx from "clsx";
 
 type InterviewTurn = {
@@ -25,18 +25,24 @@ type Interview = {
   turns: InterviewTurn[];
 };
 
+type SpeechAlternativeLike = { transcript: string; confidence: number };
+
 type SpeechRecognitionEventLike = Event & {
   resultIndex: number;
   results: {
     length: number;
     [index: number]: {
       isFinal: boolean;
-      [index: number]: {
-        transcript: string;
-      };
+      length: number;
+      [index: number]: SpeechAlternativeLike;
     };
   };
 };
+
+type RetryAction = { kind: "turn"; candidateText?: string; directorNote?: string } | { kind: "complete" };
+
+/** How long the candidate can pause before their answer is treated as finished. */
+const END_OF_ANSWER_SILENCE_MS = 2200;
 
 type SpeechRecognitionErrorEventLike = Event & {
   error: string;
@@ -45,6 +51,7 @@ type SpeechRecognitionErrorEventLike = Event & {
 type SpeechRecognitionLike = EventTarget & {
   continuous: boolean;
   interimResults: boolean;
+  maxAlternatives: number;
   lang: string;
   start: () => void;
   stop: () => void;
@@ -76,6 +83,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const endInterviewRef = useRef<() => Promise<void>>(async () => {});
   const selectedVoiceRef = useRef("");
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const answerBufferRef = useRef("");
+  const pausedForRetryRef = useRef(false);
+  const silenceTimerRef = useRef<number | null>(null);
+  const busyNoticeTimerRef = useRef<number | null>(null);
 
   const [interview, setInterview] = useState<Interview | null>(null);
   const [phase, setPhase] = useState<"loading" | "ready" | "connecting" | "live" | "ending" | "complete" | "error">("loading");
@@ -88,6 +99,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [chatDraft, setChatDraft] = useState("");
   const [currentTime, setCurrentTime] = useState("--:--");
   const [remainingSeconds, setRemainingSeconds] = useState(600);
+  const [micNotice, setMicNotice] = useState("");
+  const [retryAction, setRetryActionState] = useState<RetryAction | null>(null);
+
+  function setRetryAction(action: RetryAction | null) {
+    pausedForRetryRef.current = Boolean(action);
+    setRetryActionState(action);
+  }
 
   useEffect(() => {
     async function load() {
@@ -153,7 +171,15 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     return () => window.clearInterval(timer);
   }, []);
 
+  function clearSilenceTimer() {
+    if (silenceTimerRef.current) window.clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = null;
+  }
+
   function cleanup() {
+    clearSilenceTimer();
+    if (busyNoticeTimerRef.current) window.clearTimeout(busyNoticeTimerRef.current);
+    answerBufferRef.current = "";
     activeRef.current = false;
     processingRef.current = false;
     speakingRef.current = false;
@@ -163,7 +189,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   }
 
   function startListening() {
-    if (!activeRef.current || mutedRef.current || speakingRef.current || processingRef.current) return;
+    if (!activeRef.current || mutedRef.current || speakingRef.current || processingRef.current || pausedForRetryRef.current) return;
 
     try {
       setStatus("Listening");
@@ -211,17 +237,17 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   }
 
   useEffect(() => {
-    if (phase !== "live") return;
+    if (phase !== "live" || retryAction) return;
 
     const timer = window.setInterval(() => {
       setRemainingSeconds((current) => Math.max(0, current - 1));
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [phase]);
+  }, [phase, retryAction]);
 
   useEffect(() => {
-    if (phase !== "live") return;
+    if (phase !== "live" || retryAction) return;
     if (remainingSeconds <= 60 && remainingSeconds > 0 && !finalPromptAskedRef.current && !processingRef.current && !speakingRef.current) {
       finalPromptAskedRef.current = true;
       void requestNextTurnRef.current(undefined, "Only one minute remains. Briefly announce wrap-up and ask one final pinpoint question based on the strongest gap in the conversation.");
@@ -229,15 +255,24 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     if (remainingSeconds === 0) {
       void endInterviewRef.current();
     }
-  }, [phase, remainingSeconds]);
+  }, [phase, remainingSeconds, retryAction]);
 
-  async function requestNextTurn(candidateText?: string, directorNote?: string) {
+  async function requestNextTurn(candidateText?: string, directorNote?: string, isRetry = false) {
     processingRef.current = true;
-    if (candidateText) {
+    clearSilenceTimer();
+    answerBufferRef.current = "";
+    setRetryAction(null);
+    setError("");
+    if (candidateText && !isRetry) {
       setTurns((current) => [...current, { speaker: "candidate", text: candidateText }]);
-      setLiveCandidateText("");
     }
+    setLiveCandidateText("");
     setStatus(candidateText ? "Interviewer is thinking" : "Interviewer is joining");
+    // The server retries busy AI models automatically; tell the candidate if that takes a while.
+    if (busyNoticeTimerRef.current) window.clearTimeout(busyNoticeTimerRef.current);
+    busyNoticeTimerRef.current = window.setTimeout(() => {
+      if (processingRef.current) setStatus("AI is busy, retrying automatically…");
+    }, 7000);
 
     try {
       const response = await fetch(`/api/interviews/${interviewId}/respond`, {
@@ -245,29 +280,61 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: candidateText, directorNote }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || "Could not generate the next question.");
+        throw new Error(data.error || "Ava could not reply. Tap Retry to continue.");
       }
+      if (busyNoticeTimerRef.current) window.clearTimeout(busyNoticeTimerRef.current);
       if (endingRef.current) {
         processingRef.current = false;
         return;
       }
 
-      setTurns((current) => [...current, { speaker: "interviewer", text: data.reply }]);
+      setTurns((current) => {
+        const next = [...current];
+        // Show the cleaned-up version of what the candidate said.
+        if (candidateText && data.candidateText) {
+          for (let index = next.length - 1; index >= 0; index -= 1) {
+            if (next[index].speaker === "candidate") {
+              next[index] = { ...next[index], text: data.candidateText };
+              break;
+            }
+          }
+        }
+        return [...next, { speaker: "interviewer", text: data.reply }];
+      });
       processingRef.current = false;
       if (endingRef.current) return;
-      await speak(data.reply);
+      try {
+        await speak(data.reply);
+      } catch {
+        // If the browser voice fails, the question is still visible in the transcript.
+        setStatus("Read Ava's question in the transcript, then answer");
+      }
       if (activeRef.current && !mutedRef.current) {
         window.setTimeout(startListening, 250);
       }
     } catch (requestError) {
+      if (busyNoticeTimerRef.current) window.clearTimeout(busyNoticeTimerRef.current);
       processingRef.current = false;
       if (endingRef.current) return;
-      activeRef.current = false;
-      setError(requestError instanceof Error ? requestError.message : "The interview loop stopped.");
-      setPhase("error");
+      // Keep the interview alive: pause and let the candidate retry the same turn.
+      recognitionRef.current?.abort();
+      setError(requestError instanceof Error ? requestError.message : "Ava could not reply. Tap Retry to continue.");
+      setRetryAction({ kind: "turn", candidateText, directorNote });
+      setStatus("Paused — tap Retry to continue");
     }
+  }
+
+  async function retryLastStep() {
+    const action = retryAction;
+    if (!action) return;
+    if (action.kind === "complete") {
+      endingRef.current = false;
+      await endInterview();
+      return;
+    }
+    await requestNextTurn(action.candidateText, action.directorNote, true);
   }
 
   async function finishByVoiceCommand(candidateText: string) {
@@ -281,7 +348,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   async function submitChatMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = chatDraft.trim();
-    if (!message || processingRef.current || phase === "ending" || phase === "complete") return;
+    if (!message || processingRef.current || pausedForRetryRef.current || phase === "ending" || phase === "complete") return;
 
     setChatDraft("");
     if (isEndInterviewCommand(message)) {
@@ -291,6 +358,19 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     await requestNextTurn(message);
   }
 
+  function submitBufferedAnswer() {
+    clearSilenceTimer();
+    const answer = answerBufferRef.current.replace(/\s+/g, " ").trim();
+    if (!answer || !activeRef.current || processingRef.current) return;
+    answerBufferRef.current = "";
+    recognitionRef.current?.abort();
+    if (isEndInterviewCommand(answer)) {
+      void finishByVoiceCommand(answer);
+      return;
+    }
+    void requestNextTurnRef.current(answer);
+  }
+
   function configureRecognition() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
@@ -298,53 +378,73 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     }
 
     const recognition = new Recognition();
-    recognition.continuous = false;
+    // Keep listening through short pauses; the answer is sent after a longer silence.
+    recognition.continuous = true;
     recognition.interimResults = true;
+    recognition.maxAlternatives = 3;
     recognition.lang = speechLanguageFor(interview?.language || "English");
 
     recognition.onresult = (event) => {
+      if (!activeRef.current || processingRef.current || speakingRef.current || pausedForRetryRef.current) return;
       let interimTranscript = "";
-      let finalTranscript = "";
 
       for (let resultIndex = event.resultIndex; resultIndex < event.results.length; resultIndex += 1) {
-        const transcript = event.results[resultIndex]?.[0]?.transcript || "";
-        if (event.results[resultIndex]?.isFinal) {
-          finalTranscript += transcript;
+        const result = event.results[resultIndex];
+        if (!result) continue;
+        const transcript = bestAlternative(result);
+        if (result.isFinal) {
+          answerBufferRef.current = `${answerBufferRef.current} ${transcript}`.trim();
         } else {
           interimTranscript += transcript;
         }
       }
 
-      setLiveCandidateText((finalTranscript || interimTranscript).trim());
-      if (finalTranscript.trim() && activeRef.current) {
-        recognition.stop();
-        if (isEndInterviewCommand(finalTranscript)) {
-          void finishByVoiceCommand(finalTranscript.trim());
-          return;
-        }
-        void requestNextTurn(finalTranscript.trim());
+      const visible = `${answerBufferRef.current} ${interimTranscript}`.replace(/\s+/g, " ").trim();
+      setLiveCandidateText(visible);
+      if (visible) setStatus("Listening — pause for a moment when you finish");
+
+      // Restart the end-of-answer countdown every time new speech arrives.
+      clearSilenceTimer();
+      if (answerBufferRef.current || interimTranscript) {
+        silenceTimerRef.current = window.setTimeout(() => {
+          if (interimTranscript && !answerBufferRef.current.endsWith(interimTranscript.trim())) {
+            answerBufferRef.current = `${answerBufferRef.current} ${interimTranscript}`.trim();
+          }
+          submitBufferedAnswer();
+        }, END_OF_ANSWER_SILENCE_MS);
       }
     };
 
     recognition.onerror = (event) => {
       if (!activeRef.current || event.error === "aborted") return;
       if (event.error === "no-speech") {
-        setLiveCandidateText("");
         setStatus("I am listening");
         return;
       }
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        activeRef.current = false;
-        setError("Microphone or browser speech permission was denied.");
-        setPhase("error");
+      if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
+        // Keep the interview going in chat mode instead of stopping it.
+        mutedRef.current = true;
+        setMuted(true);
+        setLiveCandidateText("");
+        setStatus("Microphone unavailable — answer in the chat box");
+        setMicNotice(
+          event.error === "audio-capture"
+            ? "No microphone was found. Connect one and press the mic button, or type your answers in the chat box."
+            : "Microphone access is blocked. Allow it from the icon in the address bar and press the mic button, or type your answers in the chat box.",
+        );
+        return;
+      }
+      if (event.error === "network") {
+        setStatus("Speech service hiccup, listening again");
         return;
       }
       setStatus("Listening again");
     };
 
     recognition.onend = () => {
+      // Chrome ends recognition sessions on its own; resume while keeping what was already heard.
       if (activeRef.current && !mutedRef.current && !speakingRef.current && !processingRef.current) {
-        window.setTimeout(startListening, 350);
+        window.setTimeout(startListening, 250);
       }
     };
 
@@ -382,8 +482,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     mutedRef.current = nextMuted;
     setMuted(nextMuted);
 
+    setMicNotice("");
     if (nextMuted) {
       recognitionRef.current?.abort();
+      clearSilenceTimer();
+      answerBufferRef.current = "";
       setLiveCandidateText("");
       setStatus("Microphone paused");
     } else if (activeRef.current && !speakingRef.current && !processingRef.current) {
@@ -396,17 +499,21 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     endingRef.current = true;
     setPhase("ending");
     setStatus("Creating scorecard");
+    setRetryAction(null);
+    setError("");
     cleanup();
-    const response = await fetch(`/api/interviews/${interviewId}/complete`, { method: "POST" });
-    const data = await response.json();
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/interviews/${interviewId}/complete`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not create the scorecard.");
       setInterview(data.interview);
       setPhase("complete");
       setStatus("Scorecard ready");
       navigate(`/interview/${interviewId}/report`);
-    } else {
-      setError(data.error || "Could not complete interview.");
-      setPhase("error");
+    } catch (completeError) {
+      setError(completeError instanceof Error ? completeError.message : "Could not create the scorecard.");
+      setRetryAction({ kind: "complete" });
+      setStatus("Scorecard paused — tap Retry");
     }
   }
 
@@ -571,6 +678,23 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
       </section>
 
+      {micNotice && !retryAction && (
+        <div className="error-panel meeting-error retry-panel" role="status">
+          <strong>Microphone needs attention</strong>
+          <p>{micNotice}</p>
+        </div>
+      )}
+
+      {retryAction && (
+        <div className="error-panel meeting-error retry-panel" role="alert">
+          <strong>{retryAction.kind === "complete" ? "Scorecard is waiting" : "Ava is reconnecting"}</strong>
+          <p>{error}</p>
+          <button className="primary-button" onClick={() => void retryLastStep()}>
+            <RotateCcw size={16} /> Retry
+          </button>
+        </div>
+      )}
+
       {phase === "error" && (
         <div className="error-panel meeting-error">
           <strong>Something needs attention</strong>
@@ -623,7 +747,18 @@ function isClearInterviewVoice(voice: SpeechSynthesisVoice) {
 function speechLanguageFor(language: Interview["language"]) {
   if (language === "Hindi") return "hi-IN";
   if (language === "Hinglish") return "en-IN";
-  return "en-US";
+  // Indian-English recognition is far more accurate for Indian accents. Use the browser's own
+  // English locale only when it is clearly a different English variant (e.g. en-GB, en-AU).
+  const browserEnglish = (navigator.languages || [navigator.language]).find((lang) => /^en-(in|gb|au|ca|nz|ie|za|sg)$/i.test(lang));
+  return browserEnglish || "en-IN";
+}
+
+function bestAlternative(result: { length: number; [index: number]: SpeechAlternativeLike }) {
+  let best = result[0];
+  for (let index = 1; index < result.length; index += 1) {
+    if ((result[index]?.confidence || 0) > (best?.confidence || 0)) best = result[index];
+  }
+  return best?.transcript || "";
 }
 
 function formatTimer(seconds: number) {

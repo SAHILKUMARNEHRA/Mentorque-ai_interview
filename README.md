@@ -124,7 +124,8 @@ Open http://localhost:5173 in the latest Chrome or Edge, create an account, choo
 | `MONGODB_URI` | ✅ | MongoDB connection string, e.g. `mongodb+srv://USER:PASS@cluster.mongodb.net/mentorque` |
 | `JWT_SECRET` | ✅ | Long random string used to sign session cookies |
 | `GEMINI_API_KEY` | ✅ | Free API key from Google AI Studio |
-| `GEMINI_MODEL` | — | Defaults to `gemini-3.1-flash-lite` |
+| `GEMINI_MODEL` | — | Primary model, defaults to `gemini-3.1-flash-lite` |
+| `GEMINI_FALLBACK_MODELS` | — | Comma-separated backup models used when the primary is overloaded (default `gemini-2.5-flash-lite,gemini-2.5-flash`) |
 | `ADMIN_EMAILS` | — | Comma-separated emails that can open `/admin`, e.g. `owner@example.com,contributor@example.com` (`ADMIN_EMAIL` also works) |
 | `CLIENT_URL` | — | Allowed CORS origin when frontend and API run on different origins (default `http://localhost:5173`) |
 | `PORT` | — | Local API port (default `5000`) |
@@ -154,6 +155,14 @@ Steps:
 2. The answer is sent to `POST /api/interviews/:id/respond`. The API saves it as a turn in MongoDB and sends the **full transcript** to Gemini, with interviewer instructions from `services/interviewPrompt.js`. There is no static question bank.
 3. Ava's reply is saved and returned. The browser reads it aloud with SpeechSynthesis.
 4. When the interview ends, `POST /api/interviews/:id/complete` runs a LangGraph workflow (`services/interviewGraph.js`) that scores the transcript and returns a summary, strengths, improvements and next steps.
+
+## Reliability
+
+- **AI busy / high demand:** every Gemini call retries temporary errors (429/5xx/timeouts) with backoff, then falls back to `GEMINI_FALLBACK_MODELS`, all within the Vercel time limit. If Gemini is still unavailable, the interview **pauses with a Retry button** instead of stopping, the timer pauses, and the candidate's answer is not lost (it is saved only after Ava replies, so retries never create duplicates).
+- **Scorecards are never faked:** if evaluation fails, the transcript is kept and the candidate can retry the scorecard.
+- **Speech recognition:** the mic listens continuously and sends the answer only after a ~2 second pause (no more cut-off sentences), uses Indian-English recognition for English/Hinglish (`en-IN`) and `hi-IN` for Hindi, and picks the most confident alternative. Gemini then quietly fixes obvious misheard words in the saved transcript.
+- **No microphone?** The interview continues in the chat box instead of stopping.
+- **Admins** can open any candidate's scorecard or in-progress transcript (read-only) from `/admin`.
 
 ## Notes
 

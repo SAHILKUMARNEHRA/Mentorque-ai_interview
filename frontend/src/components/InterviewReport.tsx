@@ -22,6 +22,9 @@ type Interview = {
   improvements: string[];
   nextSteps: string[];
   turns: InterviewTurn[];
+  candidateName?: string;
+  candidateEmail?: string;
+  viewerIsOwner?: boolean;
 };
 
 export function InterviewReport({ interviewId }: { interviewId: string }) {
@@ -33,7 +36,13 @@ export function InterviewReport({ interviewId }: { interviewId: string }) {
     async function loadReport() {
       const response = await fetch(`/api/interviews/${interviewId}`);
       if (!response.ok) {
-        setError("Could not load this scorecard.");
+        setError(
+          response.status === 401
+            ? "Please log in to view this scorecard."
+            : response.status === 404
+              ? "This scorecard does not exist or you do not have access to it."
+              : "Could not load this scorecard. Please refresh the page.",
+        );
         return;
       }
       const data = await response.json();
@@ -67,15 +76,21 @@ export function InterviewReport({ interviewId }: { interviewId: string }) {
   }
 
   const score = interview.score ?? 0;
+  const isComplete = interview.status === "COMPLETED";
+  const viewingAsAdmin = interview.viewerIsOwner === false;
+  const candidateLabel = viewingAsAdmin ? interview.candidateName || "Candidate" : "You";
 
   return (
     <main className="report-shell">
       <header className="report-topbar">
-        <button className="ghost-button report-back" onClick={() => navigate("/")}>
-          <ArrowLeft size={16} /> Dashboard
+        <button className="ghost-button report-back" onClick={() => navigate(viewingAsAdmin ? "/admin" : "/")}>
+          <ArrowLeft size={16} /> {viewingAsAdmin ? "Admin panel" : "Dashboard"}
         </button>
         <div>
-          <p className="eyebrow">Interview scorecard</p>
+          <p className="eyebrow">
+            {isComplete ? "Interview scorecard" : "Interview in progress"}
+            {viewingAsAdmin && ` · ${interview.candidateName}${interview.candidateEmail ? ` (${interview.candidateEmail})` : ""}`}
+          </p>
           <h1>{interview.role}</h1>
         </div>
         <button className="ghost-button report-back" onClick={() => window.print()}>
@@ -85,7 +100,7 @@ export function InterviewReport({ interviewId }: { interviewId: string }) {
 
       <section className="report-hero">
         <div className="report-score-ring" style={{ "--score": `${score}%` } as CSSProperties}>
-          <strong>{score}</strong>
+          <strong>{isComplete ? score : "—"}</strong>
           <span>/100</span>
         </div>
         <div className="report-summary">
@@ -94,18 +109,22 @@ export function InterviewReport({ interviewId }: { interviewId: string }) {
             <span>{interview.language}</span>
             <span>{interview.turns.length} transcript turns</span>
           </div>
-          <h2>{interview.summary || "Interview complete"}</h2>
+          <h2>{interview.summary || (isComplete ? "Interview complete" : "This interview has not been finished yet, so there is no scorecard. The transcript so far is below.")}</h2>
           <p>{interview.focus}</p>
         </div>
       </section>
 
-      <ScoreBars score={score} />
+      {isComplete && (
+        <>
+          <ScoreBars score={score} />
 
-      <section className="report-grid">
-        <ReportList icon={<CheckCircle2 size={20} />} title="Good parts" items={interview.strengths} tone="good" />
-        <ReportList icon={<TriangleAlert size={20} />} title="Bad / weak parts" items={interview.improvements} tone="weak" />
-        <ReportList icon={<Target size={20} />} title="How to improve" items={interview.nextSteps} tone="next" />
-      </section>
+          <section className="report-grid">
+            <ReportList icon={<CheckCircle2 size={20} />} title="Good parts" items={interview.strengths} tone="good" />
+            <ReportList icon={<TriangleAlert size={20} />} title="Bad / weak parts" items={interview.improvements} tone="weak" />
+            <ReportList icon={<Target size={20} />} title="How to improve" items={interview.nextSteps} tone="next" />
+          </section>
+        </>
+      )}
 
       <section className="report-transcript">
         <div className="report-section-heading">
@@ -118,7 +137,7 @@ export function InterviewReport({ interviewId }: { interviewId: string }) {
         <div className="report-transcript-feed">
           {interview.turns.map((turn, index) => (
             <article className={clsx("report-turn", turn.speaker)} key={turn.id || `${turn.speaker}-${index}`}>
-              <span>{turn.speaker === "interviewer" ? "Ava" : "You"}</span>
+              <span>{turn.speaker === "interviewer" ? "Ava" : candidateLabel}</span>
               <p>{turn.text}</p>
             </article>
           ))}
